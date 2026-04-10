@@ -1,0 +1,289 @@
+<!-- ════════════════════════════════════════════════════════════════
+     body.html  — Scorecard Interactive Binning Webapp
+     Paste this into the HTML tab of your Dataiku Standard Webapp.
+     Chart.js is loaded from CDN (requires internet) or replace with
+     a locally hosted version if your server is air-gapped.
+     ════════════════════════════════════════════════════════════════ -->
+ 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+ 
+<!-- ═══ EDIT THRESHOLD MODAL ═══ -->
+<div id="thresholdModal" class="modal-overlay" style="display:none"
+     onclick="if(event.target===this)window.closeModal()">
+  <div class="modal">
+    <h3>Edit boundary — Group <span id="modalGrpA"></span> → Group <span id="modalGrpB"></span></h3>
+    <div>
+      <label>New threshold value</label>
+      <input type="number" id="modalThreshInput" step="any" style="margin-top:4px">
+    </div>
+    <div style="font-size:11px;color:#888;margin-top:6px">
+      Current: <b id="modalCurrentVal"></b> &nbsp;|&nbsp; Valid range: <b id="modalRange"></b>
+    </div>
+    <div class="modal-actions">
+      <button onclick="window.closeModal()">Cancel</button>
+      <button class="primary" onclick="window.applyThreshold()">Apply</button>
+    </div>
+  </div>
+</div>
+ 
+<div class="shell">
+ 
+  <!-- ══════ SIDEBAR ══════ -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <div class="app-logo">
+        <div class="logo-icon">SB</div>
+        <div>
+          <div class="logo-title">Scorecard Binning</div>
+          <div class="logo-sub">WOE · IV · KS optimizer</div>
+        </div>
+      </div>
+ 
+      <div class="section-label">Dataset</div>
+      <div class="field-stack">
+        <div>
+          <label>Dataset</label>
+          <select id="datasetSel"><option value="">Loading…</option></select>
+        </div>
+        <div>
+          <label>Target column (binary 0/1)</label>
+          <select id="targetSel"><option value="">— select after loading —</option></select>
+        </div>
+        <button class="primary" onclick="window.loadDataset()">Load dataset</button>
+        <div id="dsStats"></div>
+      </div>
+    </div>
+ 
+    <div class="sidebar-body">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <div class="section-label" style="margin:0">Variables</div>
+        <button onclick="window.fitAll()" style="font-size:10px;padding:2px 7px">Fit all</button>
+      </div>
+      <div id="varList"><div class="empty-hint">Load a dataset first</div></div>
+    </div>
+ 
+    <div class="sidebar-footer">
+      <button class="success" onclick="window.switchMain('export')" style="width:100%">Export &amp; Deploy ↗</button>
+      <button class="ghost"   onclick="window.writeOutputDataset()" style="width:100%;margin-top:4px">Write output dataset</button>
+    </div>
+  </div>
+ 
+  <!-- ══════ MAIN ══════ -->
+  <div class="main">
+ 
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <div class="tb-field" style="min-width:145px">
+        <label>Variable</label>
+        <select id="varSel" onchange="onVarChange()"><option value="">— select —</option></select>
+      </div>
+      <div id="dtypePillWrap" style="align-self:flex-end;padding-bottom:4px"></div>
+      <div class="tb-sep"></div>
+      <div class="tb-field">
+        <label>Optimize by</label>
+        <select id="metricSel">
+          <option value="iv">Information Value</option>
+          <option value="gini">Gini</option>
+          <option value="ks">KS Statistic</option>
+        </select>
+      </div>
+      <div class="tb-field" id="monoWrap">
+        <label>Monotonicity</label>
+        <select id="monoSel">
+          <option value="none">None</option>
+          <option value="increasing">↑ Increasing WOE</option>
+          <option value="decreasing">↓ Decreasing WOE</option>
+          <option value="auto">Auto</option>
+        </select>
+      </div>
+      <div class="tb-field" style="max-width:95px">
+        <label>Max bins <b id="binLbl">5</b></label>
+        <input type="range" id="binSlider" min="2" max="12" value="5"
+               oninput="document.getElementById('binLbl').textContent=this.value">
+      </div>
+      <div class="tb-field" id="catCutWrap" style="display:none;max-width:110px">
+        <label>Rare cat % <b id="catLbl">5</b></label>
+        <input type="range" id="catSlider" min="1" max="20" value="5"
+               oninput="document.getElementById('catLbl').textContent=this.value">
+      </div>
+      <div class="tb-sep"></div>
+      <button class="primary" onclick="window.fitCurrent()">
+        <span id="runSpin" style="display:none" class="spin"></span> Run binning
+      </button>
+      <button onclick="window.fitCurrent()">Reset</button>
+    </div>
+ 
+    <!-- Main tab bar -->
+    <div class="main-tabs">
+      <button class="main-tab active" id="mtBin" onclick="window.switchMain('binning')">Binning</button>
+      <button class="main-tab"        id="mtExp" onclick="window.switchMain('export')">Export &amp; Deploy</button>
+    </div>
+ 
+    <!-- ══ BINNING PANEL ══ -->
+    <div id="panelBinning" class="content">
+ 
+      <!-- Metrics strip -->
+      <div class="card">
+        <div class="metrics-row">
+          <div class="mbox"><div class="mval" id="mIV">—</div><div class="mlbl">IV</div></div>
+          <div class="mbox"><div class="mval" id="mGini">—</div><div class="mlbl">Gini</div></div>
+          <div class="mbox"><div class="mval" id="mKS">—</div><div class="mlbl">KS</div></div>
+          <div class="mbox"><div class="mval" id="mBins">—</div><div class="mlbl">Bins</div></div>
+          <div class="mbox"><div class="mval" id="mMono">—</div><div class="mlbl">Monotonic</div></div>
+          <span id="ivInterp" style="display:none" class="iv-interp"></span>
+        </div>
+      </div>
+ 
+      <!-- Charts -->
+      <div class="charts-grid">
+        <div class="card">
+          <div class="card-label">
+            Count by bin &nbsp;
+            <span id="dragHint" class="drag-hint">● drag red lines · or click bins to select</span>
+          </div>
+          <div class="chart-outer" id="chartOuter">
+            <div class="chart-wrap"><canvas id="countChart"></canvas></div>
+            <div id="cutLines"></div>
+            <div id="cutTip" class="cut-tip"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-label">WOE by group</div>
+          <div class="chart-wrap"><canvas id="woeChart"></canvas></div>
+        </div>
+      </div>
+ 
+      <!-- Table + categorical tabs -->
+      <div class="card">
+        <div class="tabs">
+          <button class="tab-btn active" id="tabStats" onclick="window.switchTab('stats')">Bin statistics</button>
+          <button class="tab-btn"        id="tabCat"   onclick="window.switchTab('cat')"   style="display:none">Group categories</button>
+        </div>
+ 
+        <!-- Action bar (shown when rows selected) -->
+        <div class="bin-toolbar" id="binToolbar">
+          <span class="bin-toolbar-hint" id="binHint">Click a row to select · Shift/Ctrl+click for multi-select</span>
+        </div>
+ 
+        <!-- Stats table -->
+        <div id="panelStats" style="overflow-x:auto">
+          <table class="btable">
+            <thead><tr>
+              <th style="width:28px"></th>
+              <th>Label</th><th>Group</th><th>Count</th>
+              <th>Events</th><th>Non-events</th><th>Event rate</th>
+              <th>WOE</th><th>IV contrib</th><th>Trend</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="binTbody">
+              <tr><td colspan="11" style="text-align:center;color:#aaa;padding:24px;font-size:12px">
+                Load a dataset, select a variable, and click Run binning
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+ 
+        <!-- Categorical grouping panel -->
+        <div id="panelCat" style="display:none">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <span style="font-size:12px;color:#666">
+              Click chip to select · Ctrl+click for multi-select · then <b>← Move here</b>
+            </span>
+            <div style="display:flex;gap:5px">
+              <button onclick="window.addCatGroup()"  style="font-size:11px">+ New group</button>
+              <button onclick="window.applyGrouping()" class="primary" style="font-size:11px">Apply grouping</button>
+            </div>
+          </div>
+          <div id="catGroupsUI" class="cat-area"></div>
+          <div style="margin-top:6px">
+            <div style="font-size:10px;color:#aaa;margin-bottom:4px">Unassigned categories</div>
+            <div id="uaZone" class="ua-zone"></div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /panelBinning -->
+ 
+    <!-- ══ EXPORT PANEL ══ -->
+    <div id="panelExport" class="content" style="display:none">
+ 
+      <!-- Real-time score test -->
+      <div class="card">
+        <h2 style="font-size:14px;font-weight:700;margin-bottom:8px">Test real-time scoring</h2>
+        <p style="font-size:12px;color:#666;margin-bottom:8px">
+          Paste a raw record as JSON — all fitted variables are scored instantly using the backend.
+        </p>
+        <div style="display:flex;gap:8px;align-items:flex-end">
+          <div style="flex:1">
+            <label>Input record (JSON)</label>
+            <input type="text" id="testInput" placeholder='{"AGE": 34, "INCOME": 52000, "JOB_TYPE": "Unemployed"}'>
+          </div>
+          <button class="primary" onclick="window.scoreRecord()">Score →</button>
+        </div>
+        <div id="scoreOut" class="score-out" style="display:none"></div>
+      </div>
+ 
+      <!-- Export cards -->
+      <div class="export-grid">
+ 
+        <div class="exp-card">
+          <h3>Python scorer <code>scorer.py</code></h3>
+          <p>Standalone <code>if/else</code> logic — zero dependencies. Deploy to any Python env, Lambda, or REST API.</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
+            <select id="pyVarSel" onchange="loadPyPrev()" style="width:auto;min-width:100px"></select>
+            <button class="primary" onclick="window.dlFile('/api/export/python','scorer.py')">Download scorer.py</button>
+          </div>
+          <div class="code-block" id="pyPrev"><span class="cm"># select a variable to preview</span></div>
+        </div>
+ 
+        <div class="exp-card">
+          <h3>SQL CASE WHEN</h3>
+          <p>Full SELECT with all transformations. Paste into Dataiku SQL recipe, BigQuery, Spark, Snowflake.</p>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
+            <select id="sqlDialect" style="width:auto" onchange="loadSQLPrev()">
+              <option value="standard">Standard SQL</option>
+              <option value="spark">Spark SQL</option>
+              <option value="bigquery">BigQuery</option>
+            </select>
+            <select id="sqlVarSel" onchange="loadSQLPrev()" style="width:auto;min-width:100px"></select>
+            <button class="primary" onclick="window.dlSQL()">Download .sql</button>
+          </div>
+          <div class="code-block" id="sqlPrev"><span class="cm">-- select a variable to preview</span></div>
+        </div>
+ 
+        <div class="exp-card">
+          <h3>JSON bundle <code>bundle.json</code></h3>
+          <p>Machine-readable schema for all variables. Paste into the <b>Apply WOE Transform</b> recipe config.</p>
+          <div style="margin-bottom:8px">
+            <button class="primary" onclick="window.dlFile('/api/export/bundle','bundle.json')">Download bundle.json</button>
+          </div>
+          <div class="code-block" id="jsonPrev"><span class="cm">// click Download to preview</span></div>
+        </div>
+ 
+        <div class="exp-card">
+          <h3>Scorecard points table</h3>
+          <p>Classic credit scorecard format with points per bin — configurable PDO and base score.</p>
+          <div style="display:flex;gap:6px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap">
+            <label style="white-space:nowrap">PDO
+              <input type="number" id="pdoIn" value="20" style="width:55px;display:inline-block">
+            </label>
+            <label style="white-space:nowrap">Base score
+              <input type="number" id="baseIn" value="600" style="width:65px;display:inline-block">
+            </label>
+            <button class="primary" onclick="window.dlScorecard()">Download CSV</button>
+          </div>
+          <div class="code-block" id="scPrev"><span class="cm">// click Download to preview</span></div>
+        </div>
+ 
+      </div><!-- /export-grid -->
+ 
+      <!-- Dataiku recipe snippet -->
+      <div class="card">
+        <h2 style="font-size:13px;font-weight:700;margin-bottom:8px">
+          Dataiku pipeline recipe — apply bundle at scale
+        </h2>
+        <div class="code-block" id="recipeSnip"></div>
+      </div>
+ 
+    </div><!-- /panelExport -->
+ 
+  </div><!-- /main -->
+</div><!-- /shell -->
